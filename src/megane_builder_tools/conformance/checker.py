@@ -358,7 +358,7 @@ def check_result(
                 d = np.linalg.norm(
                     parsed.structure.positions_array()[:, None, :] - doc.positions_array()[None, :, :], axis=2
                 )
-                if float(d.min()) < 0.1:
+                if float(np.min(d)) < 0.1:
                     report.add("error", name, "an insert result must not repeat the document's atoms")
 
 

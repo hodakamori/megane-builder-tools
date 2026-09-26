@@ -29,6 +29,11 @@ code comments (`§5.1`) refer to it. Change the contract there first, then here.
 9. **Run `make check` before pushing** (lock check, ruff, ty, pytest with
    coverage, and the conformance checker against this server over stdio).
 10. **Always create a PR after pushing** and verify CI is green.
+11. **A deployed call must finish within 100 s.** App Runner closes every
+    request at 120 s; `MEGANE_BUILDER_TOOLS_CALL_TIMEOUT` turns an overrun into
+    a tool error. Keep new tools' typical sizes well inside that budget, and
+    never write server code that assumes a session survives between requests
+    (the deployment is stateless).
 
 ## Layout
 
@@ -40,6 +45,7 @@ code comments (`§5.1`) refer to it. Change the contract there first, then here.
 | `src/megane_builder_tools/server.py` | `create_server()`, stdio/HTTP CLI (`megane-builder-tools`) |
 | `src/megane_builder_tools/conformance/` | `megane-builder-conformance` |
 | `scripts/record_fixtures.py` | Recorded MCP responses for megane's client tests |
+| `Dockerfile`, `deploy/` | Container image and the AWS App Runner deployment (Terraform, see `deploy/README.md`) |
 
 ## Commands
 

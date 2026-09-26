@@ -11,6 +11,7 @@ from pydantic import Field
 from megane_builder_tools.sdk import (
     META_KEY,
     BuilderResult,
+    CallLimits,
     DocumentInput,
     MoleculeInput,
     OptionalDocumentInput,
@@ -177,3 +178,59 @@ def test_progress_without_context_records():
     p = Progress()
     p(1.5, "clamped")
     assert p.reports == [(1.0, "clamped")]
+
+
+def test_call_limits_validate():
+    with pytest.raises(ValueError, match="timeout"):
+        CallLimits(timeout=0)
+    with pytest.raises(ValueError, match="max_concurrency"):
+        CallLimits(max_concurrency=0)
+    CallLimits().release()  # no slots: a no-op
+
+
+@builder_tool(title="Slow", category="other", apply="new_document")
+def slow(delay: float, gate: object = None) -> BuilderResult:
+    """Sleep, then return one atom."""
+    import time
+
+    time.sleep(delay)
+    return BuilderResult(name="slow", structure=atoms(1))
+
+
+@builder_tool(title="Slow async", category="other", apply="new_document")
+async def slow_async(delay: float) -> BuilderResult:
+    """Sleep asynchronously, then return one atom."""
+    import anyio
+
+    await anyio.sleep(delay)
+    return BuilderResult(name="slow", structure=atoms(1))
+
+
+async def test_timeouts_become_tool_errors():
+    limits = CallLimits(timeout=0.2)
+    with pytest.raises(ToolError, match=r"did not finish within the server's 0\.2 s limit"):
+        await slow.run(limits=limits, delay=1.0)
+    with pytest.raises(ToolError, match="did not finish"):
+        await slow_async.run(limits=limits, delay=1.0)
+    assert (await slow.run(limits=limits, delay=0.0)).name == "slow"
+
+
+async def test_a_busy_server_refuses_and_slots_follow_the_thread():
+    import anyio
+
+    limits = CallLimits(timeout=0.3, max_concurrency=1)
+    with pytest.raises(ToolError, match="did not finish"):
+        await slow.run(limits=limits, delay=0.8)
+    # The abandoned thread still holds the only slot, so the next call waits and gives up.
+    with pytest.raises(ToolError, match="server is busy"):
+        await slow_async.run(limits=limits, delay=0.0)
+    await anyio.sleep(0.8)
+    assert (await slow_async.run(limits=limits, delay=0.0)).name == "slow"
+
+
+async def test_limits_apply_over_mcp():
+    server = MCPServer("limited")
+    slow.register(server, CallLimits(timeout=0.2))
+    async with Client(server) as client:
+        result = await client.call_tool("slow", {"delay": 1.0})
+    assert result.is_error and "limit" in result.content[0].text

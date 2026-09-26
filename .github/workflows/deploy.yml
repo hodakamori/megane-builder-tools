@@ -1,0 +1,100 @@
+name: Deploy to AWS App Runner
+
+# Builds the image, pushes it to ECR and points the App Runner service at it
+# (deploy/terraform). Needs the same AWS credentials as megane's demo deploy:
+# secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Dockerfile"
+      - "deploy/**"
+      - ".github/workflows/deploy.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-apprunner
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-1
+  APP_NAME: megane-builder-tools
+  TF_STATE_BUCKET: megane-terraform-state
+
+jobs:
+  deploy:
+    name: Build, push and deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Ensure S3 state bucket exists
+        run: |
+          set -euo pipefail
+          aws s3api head-bucket --bucket "$TF_STATE_BUCKET" 2>/dev/null || \
+            aws s3 mb "s3://$TF_STATE_BUCKET" --region "$AWS_REGION"
+
+      - name: Terraform init
+        working-directory: deploy/terraform
+        run: terraform init -input=false
+
+      - name: Create the ECR repository
+        working-directory: deploy/terraform
+        run: terraform apply -auto-approve -input=false -target=aws_ecr_repository.tools -var "image_tag=${GITHUB_SHA}"
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.APP_NAME }}:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/${{ env.APP_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Terraform apply (roll the service to this image)
+        working-directory: deploy/terraform
+        run: terraform apply -auto-approve -input=false -var "image_tag=${GITHUB_SHA}"
+
+      - name: Smoke test
+        working-directory: deploy/terraform
+        run: |
+          set -euo pipefail
+          url="$(terraform output -raw service_url)"
+          token="$(aws secretsmanager get-secret-value --secret-id "$(terraform output -raw token_secret_arn)" --query SecretString --output text)"
+          echo "::add-mask::$token"
+          curl -fsS "https://$url/health"
+          # The conformance checker ships in the image; check the live definitions.
+          docker run --rm -e TOKEN="$token" \
+            "${{ steps.ecr.outputs.registry }}/${APP_NAME}:${GITHUB_SHA}" \
+            sh -c 'megane-builder-conformance --no-call --url "https://'"$url"'/mcp" --token "$TOKEN"'
+          {
+            echo "## Deployed ${GITHUB_SHA::7}"
+            echo "MCP endpoint: https://$url/mcp"
+            echo "Token: \`$(terraform output -raw read_token_command)\`"
+          } >> "$GITHUB_STEP_SUMMARY"

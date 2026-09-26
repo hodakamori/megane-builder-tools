@@ -1,0 +1,11 @@
+.venv
+.git
+.github
+.ruff_cache
+.pytest_cache
+**/__pycache__
+.coverage
+coverage.xml
+tests
+deploy
+fixtures

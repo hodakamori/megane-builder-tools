@@ -65,7 +65,7 @@ def to_rdkit(structure: Structure, *, sanitize: bool = True) -> Chem.Mol:
             rw.GetAtomWithIdx(int(i)).SetIsAromatic(True)
             rw.GetAtomWithIdx(int(j)).SetIsAromatic(True)
     conf = Chem.Conformer(structure.n_atoms)
-    for k, (x, y, z) in enumerate(structure.positions_array()):
+    for k, (x, y, z) in enumerate(structure.positions_array().tolist()):
         conf.SetAtomPosition(k, Point3D(float(x), float(y), float(z)))
     conf.Set3D(True)
     mol = rw.GetMol()

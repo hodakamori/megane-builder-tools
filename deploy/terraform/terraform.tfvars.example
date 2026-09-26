@@ -1,0 +1,5 @@
+# Copy to terraform.tfvars for manual applies (the workflow passes image_tag itself).
+image_tag = "latest"
+# cpu    = "1024"
+# memory = "2048"
+# allowed_origins = ["https://megane.tech-office-mori.com", "http://localhost:5173"]

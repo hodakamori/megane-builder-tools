@@ -41,6 +41,37 @@ jobs:
           name: coverage
           path: coverage.xml
 
+  docker:
+    name: Container image builds and serves
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: docker build --platform linux/amd64 -t megane-builder-tools:ci .
+      - name: Health check and conformance against the container
+        run: |
+          set -euo pipefail
+          docker run -d --name tools -p 8080:8080 -e MEGANE_BUILDER_TOOLS_TOKEN=ci \
+            -e MEGANE_BUILDER_TOOLS_ALLOWED_HOSTS='*' megane-builder-tools:ci
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8080/health && break; sleep 1; done
+          uv sync
+          uv run megane-builder-conformance --url http://127.0.0.1:8080/mcp --token ci
+
+  terraform:
+    name: Terraform fmt / validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
   conformance:
     runs-on: ubuntu-latest
     steps:
@@ -50,4 +81,7 @@ jobs:
           python-version: "3.12"
       - run: uv sync
       - name: Reference server passes the conformance checker over stdio
-        run: uv run megane-builder-conformance -- uv run megane-builder-tools
+        # Start the server from the synced environment, never through a nested
+        # `uv run`: the MCP SDK passes the child only a few environment variables,
+        # so a nested uv ignores UV_PYTHON and may rebuild .venv under the checker.
+        run: uv run megane-builder-conformance -- .venv/bin/megane-builder-tools
