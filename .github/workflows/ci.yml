@@ -81,4 +81,7 @@ jobs:
           python-version: "3.12"
       - run: uv sync
       - name: Reference server passes the conformance checker over stdio
-        run: uv run megane-builder-conformance -- uv run megane-builder-tools
+        # Start the server from the synced environment, never through a nested
+        # `uv run`: the MCP SDK passes the child only a few environment variables,
+        # so a nested uv ignores UV_PYTHON and may rebuild .venv under the checker.
+        run: uv run megane-builder-conformance -- .venv/bin/megane-builder-tools

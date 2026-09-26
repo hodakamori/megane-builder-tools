@@ -55,7 +55,7 @@ def packmol_executable() -> str:
 
 def _write_xyz(path: Path, elements: NDArray[np.int64], positions: NDArray[np.float64]) -> None:
     lines = [str(len(elements)), "megane-builder-tools"]
-    for z, (x, y, w) in zip(elements, positions, strict=True):
+    for z, (x, y, w) in zip(elements.tolist(), positions.tolist(), strict=True):
         lines.append(f"{_PT.GetElementSymbol(int(z))} {x:.6f} {y:.6f} {w:.6f}")
     path.write_text("\n".join(lines) + "\n")
 

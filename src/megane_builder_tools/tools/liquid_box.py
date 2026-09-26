@@ -71,8 +71,9 @@ async def liquid_box(
     mass = sum(c.count * m.molar_mass for c, m in zip(components, loaded, strict=True))
     ratio = (1.0, 1.0, 1.0) if shape == "cubic" else (aspect[0], aspect[1], aspect[2])
     box = box_for_volume(box_volume(mass, density), ratio)
-    if float(box.min()) < 2 * tolerance:
-        raise ToolError(f"The box would be only {box.min():.1f} Å wide; add more molecules or lower the density.")
+    narrowest = float(np.min(box))
+    if narrowest < 2 * tolerance:
+        raise ToolError(f"The box would be only {narrowest:.1f} Å wide; add more molecules or lower the density.")
 
     items = [PackItem(m.elements, m.positions, number=c.count) for c, m in zip(components, loaded, strict=True)]
     packed = await run_packmol(items, box, tolerance=tolerance, seed=seed, progress=progress.areport)

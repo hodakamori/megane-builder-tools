@@ -30,7 +30,7 @@ check:
 
 # The reference server must pass its own conformance checker, over a real stdio process.
 conformance:
-	uv run megane-builder-conformance -- uv run megane-builder-tools
+	uv run megane-builder-conformance -- .venv/bin/megane-builder-tools
 
 serve:
 	uv run megane-builder-tools
