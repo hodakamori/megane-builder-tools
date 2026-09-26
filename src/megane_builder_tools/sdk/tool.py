@@ -16,8 +16,8 @@ requires and the function should not have to repeat:
 
 from __future__ import annotations
 
-import functools
 import inspect
+import threading
 import typing
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -41,7 +41,41 @@ from .contract import (
 )
 from .models import BuilderResult
 
-__all__ = ["BuilderTool", "Progress", "ToolError", "builder_tool", "widget_of"]
+__all__ = ["BuilderTool", "CallLimits", "Progress", "ToolError", "builder_tool", "widget_of"]
+
+
+class CallLimits:
+    """Server-wide limits on tool calls: a time budget per call and a number of concurrent calls.
+
+    A call that waits for a free slot or runs past ``timeout`` seconds fails with a
+    ``ToolError``, so a client behind a proxy with a hard request timeout (App
+    Runner closes requests after 120 s) gets a readable error instead of a
+    dropped connection. A synchronous tool cannot be interrupted, so its slot is
+    released by its worker thread when the computation really ends, not when the
+    call gives up: an abandoned computation still counts against the limit.
+    """
+
+    def __init__(self, timeout: float | None = None, max_concurrency: int | None = None) -> None:
+        if timeout is not None and timeout <= 0:
+            raise ValueError("timeout must be positive")
+        if max_concurrency is not None and max_concurrency < 1:
+            raise ValueError("max_concurrency must be at least 1")
+        self.timeout = timeout
+        self.max_concurrency = max_concurrency
+        self._slots = threading.BoundedSemaphore(max_concurrency) if max_concurrency else None
+
+    async def acquire(self) -> None:
+        if self._slots is None:
+            return
+        while not self._slots.acquire(blocking=False):
+            await anyio.sleep(0.05)
+
+    def release(self) -> None:
+        if self._slots is not None:
+            self._slots.release()
+
+
+NO_LIMITS = CallLimits()
 
 
 class Progress:
@@ -132,14 +166,22 @@ class BuilderTool:
             marker["expectedSeconds"] = self.expected_seconds
         return {META_KEY: marker}
 
-    async def run(self, ctx: Context | None = None, **kwargs: Any) -> BuilderResult:
-        """Run the function (sync functions in a worker thread) and finish its result."""
+    async def run(self, ctx: Context | None = None, limits: CallLimits = NO_LIMITS, **kwargs: Any) -> BuilderResult:
+        """Run the function (sync functions in a worker thread) within ``limits`` and finish its result."""
         if self.progress_param is not None:
             kwargs[self.progress_param] = Progress(ctx)
-        if inspect.iscoroutinefunction(self.fn):
-            result = await self.fn(**kwargs)
-        else:
-            result = await anyio.to_thread.run_sync(functools.partial(self.fn, **kwargs), abandon_on_cancel=True)
+        started = False
+        try:
+            with anyio.fail_after(limits.timeout):
+                await limits.acquire()
+                started = True
+                result = await self._invoke(limits, kwargs)
+        except TimeoutError:
+            if not started:
+                raise ToolError("The server is busy with other calls; try again in a moment.") from None
+            raise ToolError(
+                f"{self.title} did not finish within the server's {limits.timeout:g} s limit; try a smaller system."
+            ) from None
         if not isinstance(result, BuilderResult):
             raise TypeError(f"{self.name} returned {type(result).__name__}, expected BuilderResult")
         from .. import __version__
@@ -149,13 +191,29 @@ class BuilderTool:
             result.provenance.setdefault("seed", kwargs["seed"])
         return result
 
+    async def _invoke(self, limits: CallLimits, kwargs: dict[str, Any]) -> Any:
+        """Call the function holding one slot of ``limits`` until it really finishes."""
+        if inspect.iscoroutinefunction(self.fn):
+            try:
+                return await self.fn(**kwargs)
+            finally:
+                limits.release()
+
+        def in_thread() -> Any:
+            try:
+                return self.fn(**kwargs)
+            finally:
+                limits.release()
+
+        return await anyio.to_thread.run_sync(in_thread, abandon_on_cancel=True)
+
     def to_call_result(self, result: BuilderResult) -> CallToolResult:
         payload = result.model_dump(mode="json", by_alias=True)
         payload["structure"] = to_wire(result)
         summary = result.summary or default_summary(self.title, result)
         return CallToolResult(content=[TextContent(type="text", text=summary)], structured_content=payload)
 
-    def handler(self) -> Callable[..., Awaitable[CallToolResult]]:
+    def handler(self, limits: CallLimits = NO_LIMITS) -> Callable[..., Awaitable[CallToolResult]]:
         """The coroutine MCPServer registers: same parameters, contract-shaped result."""
         hints = typing.get_type_hints(self.fn, include_extras=True)
         sig = inspect.signature(self.fn)
@@ -168,7 +226,7 @@ class BuilderTool:
         returns = Annotated[CallToolResult, BuilderResult]
 
         async def handler(ctx: Context, **kwargs: Any) -> CallToolResult:
-            return self.to_call_result(await self.run(ctx, **kwargs))
+            return self.to_call_result(await self.run(ctx, limits, **kwargs))
 
         handler.__name__ = self.name
         handler.__doc__ = self.description
@@ -176,9 +234,9 @@ class BuilderTool:
         handler.__annotations__ = {**{p.name: p.annotation for p in params}, "return": returns}
         return handler
 
-    def register(self, server: MCPServer) -> None:
+    def register(self, server: MCPServer, limits: CallLimits = NO_LIMITS) -> None:
         server.add_tool(
-            self.handler(),
+            self.handler(limits),
             name=self.name,
             title=self.title,
             description=self.description,

@@ -21,7 +21,7 @@ from .contract import (
     widget,
 )
 from .models import BuilderResult, DocumentInput, Molecule, MoleculeInput, OptionalDocumentInput, Structure
-from .tool import BuilderTool, Progress, ToolError, builder_tool
+from .tool import BuilderTool, CallLimits, Progress, ToolError, builder_tool
 
 __all__ = [
     "CONTRACT_VERSION",
@@ -30,6 +30,7 @@ __all__ = [
     "Angle",
     "BuilderResult",
     "BuilderTool",
+    "CallLimits",
     "Cell",
     "Count",
     "Density",

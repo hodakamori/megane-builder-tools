@@ -1,4 +1,4 @@
-.PHONY: sync lint lint-fix typecheck test coverage check conformance serve serve-http fixtures
+.PHONY: sync lint lint-fix typecheck test coverage check conformance serve serve-http fixtures docker docker-run
 
 sync:
 	uv sync
@@ -37,6 +37,14 @@ serve:
 
 serve-http:
 	uv run megane-builder-tools --transport http --allow-origin http://localhost:5173
+
+# The App Runner image (x86_64), and the same image run locally like App Runner runs it.
+docker:
+	docker build --platform linux/amd64 -t megane-builder-tools:local .
+
+docker-run:
+	docker run --rm -p 8080:8080 -e MEGANE_BUILDER_TOOLS_TOKEN=dev -e MEGANE_BUILDER_TOOLS_ALLOWED_HOSTS='*' \
+		-e MEGANE_BUILDER_TOOLS_ALLOWED_ORIGINS=http://localhost:5173 megane-builder-tools:local
 
 # Recorded tools/list and tools/call responses for megane's client-side tests.
 fixtures:

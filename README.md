@@ -66,7 +66,33 @@ uvx megane-builder-tools --transport http --port 8765 \
 
 HTTP mode checks `Host`/`Origin` and requires `Authorization: Bearer <token>`.
 The token is taken from `--token` or `$MEGANE_BUILDER_TOOLS_TOKEN`; without one,
-a random token is generated and printed to stderr.
+a random token is generated and printed to stderr (only on loopback: a server
+bound to another address refuses to start without a token).
+
+Every option is also an environment variable, which is how containers are
+configured:
+
+| Option | Environment | Purpose |
+| --- | --- | --- |
+| `--transport` | `MEGANE_BUILDER_TOOLS_TRANSPORT` | `stdio` (default) or `http` |
+| `--host` / `--port` | `MEGANE_BUILDER_TOOLS_HOST` / `PORT` | bind address and port |
+| `--token` | `MEGANE_BUILDER_TOOLS_TOKEN` | bearer token |
+| `--allow-origin` | `MEGANE_BUILDER_TOOLS_ALLOWED_ORIGINS` (comma-separated) | browser origins allowed (CORS) |
+| `--allowed-host` | `MEGANE_BUILDER_TOOLS_ALLOWED_HOSTS` | extra `Host` values; `*` turns the Host/Origin check off behind a proxy |
+| `--stateless` | `MEGANE_BUILDER_TOOLS_STATELESS=1` | Streamable HTTP without sessions |
+| `--call-timeout` | `MEGANE_BUILDER_TOOLS_CALL_TIMEOUT` | seconds a call may take before it fails with a tool error |
+| `--max-concurrency` | `MEGANE_BUILDER_TOOLS_MAX_CONCURRENCY` | calls computed at the same time |
+
+`GET /health` answers `ok` without a token, for load balancers.
+
+## Deploy
+
+`Dockerfile` builds the HTTP service; `deploy/terraform/` runs it on AWS App
+Runner (one always-on instance, token in Secrets Manager) and
+`.github/workflows/deploy.yml` builds, pushes and rolls it out. App Runner ends
+every request at 120 s, so the container stops tool calls at 100 s with a
+readable error. See [deploy/README.md](deploy/README.md) for the steps, the
+limits and the cost.
 
 ## Write your own tool
 
