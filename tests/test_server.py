@@ -4,7 +4,15 @@ import pytest
 from mcp import Client
 
 from megane_builder_tools import server
-from megane_builder_tools.server import TOOLS, BearerTokenMiddleware, create_server, http_app, parse_args
+from megane_builder_tools.server import (
+    TOOLS,
+    BearerTokenMiddleware,
+    HealthMiddleware,
+    OriginGateMiddleware,
+    create_server,
+    http_app,
+    parse_args,
+)
 
 
 async def test_server_lists_the_reference_tools():
@@ -31,7 +39,7 @@ async def test_health_needs_no_token():
     async def inner(scope, receive, send):  # pragma: no cover - never reached
         raise AssertionError("health must not reach the app")
 
-    sent = await asgi_path(BearerTokenMiddleware(inner, "t"), "GET", "/health")
+    sent = await asgi_path(HealthMiddleware(inner), "GET", "/health")
     assert sent[0]["status"] == 200 and sent[1]["body"] == b"ok"
 
 
@@ -66,6 +74,43 @@ async def test_bearer_token_middleware():
     preflight = await asgi(app, "OPTIONS", [])
     assert preflight[0]["status"] == 204
     assert calls == ["POST", "OPTIONS"]
+
+
+async def test_origin_gate_middleware():
+    calls = []
+
+    async def inner(scope, receive, send):
+        calls.append(scope["method"])
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    app = OriginGateMiddleware(inner, ["https://page.example"])
+    missing = await asgi(app, "POST", [])
+    assert missing[0]["status"] == 403 and b"allowed web origin" in missing[1]["body"]
+    other = await asgi(app, "POST", [(b"origin", b"https://evil.example")])
+    assert other[0]["status"] == 403
+    ok = await asgi(app, "POST", [(b"origin", b"https://page.example")])
+    assert ok[0]["status"] == 204
+    preflight = await asgi(app, "OPTIONS", [])
+    assert preflight[0]["status"] == 204
+    assert calls == ["POST", "OPTIONS"]
+
+
+async def test_public_http_app_gates_on_origin_and_serves_health():
+    app = http_app(
+        create_server(),
+        token=None,
+        host="0.0.0.0",
+        port=9,
+        allowed_origins=["https://page.example"],
+        allowed_hosts=["*"],
+    )
+    health = await asgi_path(app, "GET", "/health")
+    assert health[0]["status"] == 200
+    denied = await asgi(app, "POST", [(b"origin", b"https://evil.example")])
+    assert denied[0]["status"] == 403
+    token_mode = http_app(create_server(), token="t", host="127.0.0.1", port=9, allowed_origins=[])
+    assert (await asgi(token_mode, "POST", [(b"origin", b"https://page.example")]))[0]["status"] == 401
 
 
 def test_http_app_is_wrapped():
@@ -115,6 +160,25 @@ def test_public_bind_needs_a_token(monkeypatch, capsys):
     monkeypatch.delenv(server.TOKEN_ENV, raising=False)
     assert server.main(["--transport", "http", "--host", "0.0.0.0"]) == 2
     assert "without a token" in capsys.readouterr().err
+
+
+def test_public_mode(monkeypatch, capsys):
+    import uvicorn
+
+    ran = {}
+    monkeypatch.delenv(server.TOKEN_ENV, raising=False)
+    monkeypatch.setattr(uvicorn, "run", lambda app, host, port, **kw: ran.update(app=app, host=host))
+    public = ["--transport", "http", "--host", "0.0.0.0", "--public"]
+    assert server.main(public) == 2
+    assert "--allow-origin" in capsys.readouterr().err
+    assert server.main([*public, "--allow-origin", "https://page.example", "--token", "t"]) == 2
+    assert "without a token" in capsys.readouterr().err
+    assert ran == {}
+    assert server.main([*public, "--allow-origin", "https://page.example"]) == 0
+    assert ran["host"] == "0.0.0.0"
+    assert "bearer token" not in capsys.readouterr().err
+    assert parse_args([], {"MEGANE_BUILDER_TOOLS_PUBLIC": "1"}).public is True
+    assert parse_args([], {}).public is False
 
 
 def test_main_passes_limits_and_proxy_options(monkeypatch):

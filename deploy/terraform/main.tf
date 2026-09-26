@@ -14,6 +14,8 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    # No resource uses it any more; kept so the bearer token of the first
+    # (token-authenticated) deployment, still in the state, can be destroyed.
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6"
@@ -71,29 +73,7 @@ resource "aws_ecr_lifecycle_policy" "tools" {
 }
 
 # ---------------------------------------------------------------------------
-# Bearer token (Secrets Manager, injected into the container as an env var)
-# The generated value is also stored in the Terraform state; keep the state
-# bucket private.
-# ---------------------------------------------------------------------------
-resource "random_password" "token" {
-  length  = 40
-  special = false
-}
-
-resource "aws_secretsmanager_secret" "token" {
-  name                    = "${var.app_name}/token"
-  description             = "Bearer token clients send to ${var.app_name} (Authorization: Bearer ...)"
-  recovery_window_in_days = 7
-  tags                    = local.common_tags
-}
-
-resource "aws_secretsmanager_secret_version" "token" {
-  secret_id     = aws_secretsmanager_secret.token.id
-  secret_string = random_password.token.result
-}
-
-# ---------------------------------------------------------------------------
-# IAM: App Runner pulls from ECR (access role) and reads the secret (instance role)
+# IAM: App Runner pulls from ECR
 # ---------------------------------------------------------------------------
 data "aws_iam_policy_document" "build_assume" {
   statement {
@@ -114,35 +94,6 @@ resource "aws_iam_role" "access" {
 resource "aws_iam_role_policy_attachment" "access_ecr" {
   role       = aws_iam_role.access.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess"
-}
-
-data "aws_iam_policy_document" "tasks_assume" {
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["tasks.apprunner.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_iam_role" "instance" {
-  name               = "${var.app_name}-apprunner-instance"
-  assume_role_policy = data.aws_iam_policy_document.tasks_assume.json
-  tags               = local.common_tags
-}
-
-data "aws_iam_policy_document" "read_token" {
-  statement {
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = [aws_secretsmanager_secret.token.arn]
-  }
-}
-
-resource "aws_iam_role_policy" "read_token" {
-  name   = "read-token"
-  role   = aws_iam_role.instance.id
-  policy = data.aws_iam_policy_document.read_token.json
 }
 
 # ---------------------------------------------------------------------------
@@ -174,25 +125,24 @@ resource "aws_apprunner_service" "tools" {
       image_configuration {
         port = "8080"
         runtime_environment_variables = {
+          # Public mode: no token (the demo page is public, so a token in it
+          # would be too); every request must carry one of these Origins.
+          MEGANE_BUILDER_TOOLS_PUBLIC          = "1"
           MEGANE_BUILDER_TOOLS_ALLOWED_ORIGINS = join(",", var.allowed_origins)
-          # App Runner's public name is only known after creation; the bearer
-          # token and CORS protect the service, so the Host check is off.
+          # App Runner's public name is only known after creation; the Origin
+          # gate and CORS apply regardless, so the Host check is off.
           MEGANE_BUILDER_TOOLS_ALLOWED_HOSTS   = "*"
           MEGANE_BUILDER_TOOLS_STATELESS       = "1"
           MEGANE_BUILDER_TOOLS_CALL_TIMEOUT    = tostring(var.call_timeout)
           MEGANE_BUILDER_TOOLS_MAX_CONCURRENCY = tostring(var.max_concurrency)
-        }
-        runtime_environment_secrets = {
-          MEGANE_BUILDER_TOOLS_TOKEN = aws_secretsmanager_secret.token.arn
         }
       }
     }
   }
 
   instance_configuration {
-    cpu               = var.cpu
-    memory            = var.memory
-    instance_role_arn = aws_iam_role.instance.arn
+    cpu    = var.cpu
+    memory = var.memory
   }
 
   health_check_configuration {
@@ -206,9 +156,5 @@ resource "aws_apprunner_service" "tools" {
 
   tags = local.common_tags
 
-  depends_on = [
-    aws_iam_role_policy_attachment.access_ecr,
-    aws_iam_role_policy.read_token,
-    aws_secretsmanager_secret_version.token,
-  ]
+  depends_on = [aws_iam_role_policy_attachment.access_ecr]
 }

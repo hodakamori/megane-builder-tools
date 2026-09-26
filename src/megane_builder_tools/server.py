@@ -6,7 +6,10 @@ serves Streamable HTTP: for a local Builder it binds to loopback and checks
 ``Host``/``Origin``; deployed behind a proxy (App Runner, see
 ``deploy/``) it binds to all interfaces, answers ``GET /health`` without
 authentication, and is configured from the environment. Every HTTP request
-to ``/mcp`` needs the bearer token.
+to ``/mcp`` needs the bearer token, except in public mode (``--public``), where
+it needs an ``Origin`` header naming one of the allowed web origins instead:
+for a demo deployment whose page is public anyway, so a token in it would be
+public too.
 
 Every option can also be given as an environment variable
 (``MEGANE_BUILDER_TOOLS_<OPTION>``, ``PORT`` for the port), which is how
@@ -62,22 +65,33 @@ async def _plain(send: Send, status: int, body: bytes) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
-class BearerTokenMiddleware:
-    """Reject HTTP requests without ``Authorization: Bearer <token>``.
+def _needs_check(scope: Scope) -> bool:
+    """HTTP requests other than CORS preflights, which carry no credentials by design."""
+    return scope["type"] == "http" and scope.get("method") != "OPTIONS"
 
-    CORS preflights pass (they carry no credentials by design), and so does
-    ``GET /health``, which load balancers and App Runner poll.
-    """
+
+class HealthMiddleware:
+    """Answer ``GET /health`` with ``ok`` before any authentication; load balancers and App Runner poll it."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("path") == HEALTH_PATH:
+            await _plain(send, 200, b"ok")
+            return
+        await self.app(scope, receive, send)
+
+
+class BearerTokenMiddleware:
+    """Reject HTTP requests without ``Authorization: Bearer <token>`` (CORS preflights pass)."""
 
     def __init__(self, app: ASGIApp, token: str) -> None:
         self.app = app
         self._expected = f"Bearer {token}".encode()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope.get("path") == HEALTH_PATH:
-            await _plain(send, 200, b"ok")
-            return
-        if scope["type"] == "http" and scope.get("method") != "OPTIONS":
+        if _needs_check(scope):
             headers = dict(scope.get("headers") or [])
             if not hmac.compare_digest(headers.get(b"authorization", b""), self._expected):
                 await _plain(send, 401, b"missing or invalid bearer token")
@@ -85,21 +99,47 @@ class BearerTokenMiddleware:
         await self.app(scope, receive, send)
 
 
+class OriginGateMiddleware:
+    """Public mode: reject HTTP requests whose ``Origin`` is missing or not allowed (CORS preflights pass).
+
+    CORS only stops a browser page on another site from reading the response;
+    this also refuses the request itself, and refuses clients that send no
+    ``Origin`` at all (scripts, crawlers). A client can still forge the header,
+    so this keeps casual traffic out rather than authenticating anyone; the
+    per-call time limit and concurrency cap bound what a forged request costs.
+    """
+
+    def __init__(self, app: ASGIApp, allowed_origins: Sequence[str]) -> None:
+        self.app = app
+        self._allowed = {origin.encode() for origin in allowed_origins}
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if _needs_check(scope):
+            origin = dict(scope.get("headers") or []).get(b"origin")
+            if origin not in self._allowed:
+                await _plain(send, 403, b"requests must come from an allowed web origin")
+                return
+        await self.app(scope, receive, send)
+
+
 def http_app(
     server: MCPServer,
     *,
-    token: str,
+    token: str | None,
     host: str,
     port: int,
     allowed_origins: Sequence[str],
     allowed_hosts: Sequence[str] = (),
     stateless: bool = False,
 ) -> ASGIApp:
-    """The Streamable HTTP app with Host/Origin checks, CORS, bearer-token auth and ``/health``.
+    """The Streamable HTTP app with Host/Origin checks, CORS, access control and ``/health``.
+
+    Access control is the bearer ``token``, or with ``token=None`` (public mode)
+    the ``Origin`` gate over ``allowed_origins``.
 
     ``allowed_hosts`` adds ``Host`` header values to the loopback defaults; ``"*"``
     turns the Host/Origin check off, for a server behind a proxy whose public
-    name is not known in advance (the bearer token and CORS still apply).
+    name is not known in advance (access control and CORS still apply).
     """
     check_hosts = "*" not in allowed_hosts
     security = TransportSecuritySettings(
@@ -113,7 +153,8 @@ def http_app(
         host=host,
         stateless_http=stateless,
     )
-    app = BearerTokenMiddleware(app, token)
+    app = BearerTokenMiddleware(app, token) if token is not None else OriginGateMiddleware(app, allowed_origins)
+    app = HealthMiddleware(app)
     return CORSMiddleware(
         app,
         allow_origins=list(allowed_origins),
@@ -134,6 +175,10 @@ def is_loopback(host: str) -> bool:
 
 def _env_list(env: Mapping[str, str], name: str) -> list[str]:
     return [item.strip() for item in env.get(name, "").split(",") if item.strip()]
+
+
+def _env_flag(env: Mapping[str, str], name: str) -> bool:
+    return env.get(name, "").strip().lower() in ("1", "true", "yes")
 
 
 def _env_float(env: Mapping[str, str], name: str) -> float | None:
@@ -157,6 +202,12 @@ def parse_args(argv: Sequence[str] | None = None, env: Mapping[str, str] | None 
     parser.add_argument("--port", type=int, default=_env_int(env, "PORT", 8765))
     parser.add_argument("--token", default=env.get(TOKEN_ENV), help=f"HTTP bearer token (or ${TOKEN_ENV})")
     parser.add_argument(
+        "--public",
+        action="store_true",
+        default=_env_flag(env, f"{ENV_PREFIX}PUBLIC"),
+        help="Serve HTTP without a token; requests must carry an allowed Origin (for a public demo page)",
+    )
+    parser.add_argument(
         "--allow-origin",
         action="append",
         default=_env_list(env, f"{ENV_PREFIX}ALLOWED_ORIGINS"),
@@ -171,7 +222,7 @@ def parse_args(argv: Sequence[str] | None = None, env: Mapping[str, str] | None 
     parser.add_argument(
         "--stateless",
         action="store_true",
-        default=env.get(f"{ENV_PREFIX}STATELESS", "").lower() in ("1", "true", "yes"),
+        default=_env_flag(env, f"{ENV_PREFIX}STATELESS"),
         help="Serve Streamable HTTP without sessions (for several instances behind a load balancer)",
     )
     parser.add_argument(
@@ -189,6 +240,11 @@ def parse_args(argv: Sequence[str] | None = None, env: Mapping[str, str] | None 
     return parser.parse_args(argv)
 
 
+def _refuse(message: str) -> int:
+    print(f"megane-builder-tools: {message}", file=sys.stderr)
+    return 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     limits = CallLimits(timeout=args.call_timeout, max_concurrency=args.max_concurrency)
@@ -199,15 +255,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     import uvicorn
 
-    if not args.token and not is_loopback(args.host):
-        print(
-            f"megane-builder-tools: refusing to serve on {args.host} without a token; set {TOKEN_ENV}",
-            file=sys.stderr,
-        )
-        return 2
-    token = args.token or secrets.token_urlsafe(24)
-    if not args.token:
-        print(f"megane-builder-tools: bearer token {token}", file=sys.stderr, flush=True)
+    if args.public:
+        if args.token:
+            return _refuse(f"--public serves without a token; unset {TOKEN_ENV} or drop --public")
+        if not args.allow_origin:
+            return _refuse("--public needs at least one --allow-origin (the page allowed to call the server)")
+        token: str | None = None
+    elif not args.token and not is_loopback(args.host):
+        return _refuse(f"refusing to serve on {args.host} without a token; set {TOKEN_ENV} or use --public")
+    else:
+        token = args.token or secrets.token_urlsafe(24)
+        if not args.token:
+            print(f"megane-builder-tools: bearer token {token}", file=sys.stderr, flush=True)
     app = http_app(
         server,
         token=token,

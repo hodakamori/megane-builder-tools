@@ -86,15 +86,17 @@ jobs:
         run: |
           set -euo pipefail
           url="$(terraform output -raw service_url)"
-          token="$(aws secretsmanager get-secret-value --secret-id "$(terraform output -raw token_secret_arn)" --query SecretString --output text)"
-          echo "::add-mask::$token"
+          origin="https://megane.tech-office-mori.com"
           curl -fsS "https://$url/health"
-          # The conformance checker ships in the image; check the live definitions.
-          docker run --rm -e TOKEN="$token" \
-            "${{ steps.ecr.outputs.registry }}/${APP_NAME}:${GITHUB_SHA}" \
-            sh -c 'megane-builder-conformance --no-call --url "https://'"$url"'/mcp" --token "$TOKEN"'
+          # Public mode: a request without an allowed Origin is refused.
+          status="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "https://$url/mcp" -H 'content-type: application/json' -d '{}')"
+          test "$status" = 403 || { echo "expected 403 without an Origin, got $status"; exit 1; }
+          # The conformance checker ships in the image: check every definition,
+          # then run one real call (liquid_box with its schema examples).
+          image="${{ steps.ecr.outputs.registry }}/${APP_NAME}:${GITHUB_SHA}"
+          docker run --rm "$image" megane-builder-conformance --no-call --url "https://$url/mcp" --origin "$origin"
+          docker run --rm "$image" megane-builder-conformance --tool liquid_box --url "https://$url/mcp" --origin "$origin"
           {
             echo "## Deployed ${GITHUB_SHA::7}"
-            echo "MCP endpoint: https://$url/mcp"
-            echo "Token: \`$(terraform output -raw read_token_command)\`"
+            echo "MCP endpoint: https://$url/mcp (public; allowed origins only)"
           } >> "$GITHUB_STEP_SUMMARY"
