@@ -69,6 +69,13 @@ The token is taken from `--token` or `$MEGANE_BUILDER_TOOLS_TOKEN`; without one,
 a random token is generated and printed to stderr (only on loopback: a server
 bound to another address refuses to start without a token).
 
+`--public` serves without a token instead, for a server behind a public demo
+page (a token embedded in a public page is public too). Every request must then
+carry an `Origin` header naming one of the `--allow-origin` values, and anything
+else gets `403`. The header can be forged, so this keeps casual traffic out
+rather than authenticating anyone; the call time limit and concurrency cap
+bound what a forged request can cost.
+
 Every option is also an environment variable, which is how containers are
 configured:
 
@@ -77,18 +84,19 @@ configured:
 | `--transport` | `MEGANE_BUILDER_TOOLS_TRANSPORT` | `stdio` (default) or `http` |
 | `--host` / `--port` | `MEGANE_BUILDER_TOOLS_HOST` / `PORT` | bind address and port |
 | `--token` | `MEGANE_BUILDER_TOOLS_TOKEN` | bearer token |
+| `--public` | `MEGANE_BUILDER_TOOLS_PUBLIC=1` | no token; require an allowed `Origin` instead |
 | `--allow-origin` | `MEGANE_BUILDER_TOOLS_ALLOWED_ORIGINS` (comma-separated) | browser origins allowed (CORS) |
 | `--allowed-host` | `MEGANE_BUILDER_TOOLS_ALLOWED_HOSTS` | extra `Host` values; `*` turns the Host/Origin check off behind a proxy |
 | `--stateless` | `MEGANE_BUILDER_TOOLS_STATELESS=1` | Streamable HTTP without sessions |
 | `--call-timeout` | `MEGANE_BUILDER_TOOLS_CALL_TIMEOUT` | seconds a call may take before it fails with a tool error |
 | `--max-concurrency` | `MEGANE_BUILDER_TOOLS_MAX_CONCURRENCY` | calls computed at the same time |
 
-`GET /health` answers `ok` without a token, for load balancers.
+`GET /health` answers `ok` without a token or `Origin`, for load balancers.
 
 ## Deploy
 
 `Dockerfile` builds the HTTP service; `deploy/terraform/` runs it on AWS App
-Runner (one always-on instance, token in Secrets Manager) and
+Runner (one always-on instance in public mode for megane's demo site) and
 `.github/workflows/deploy.yml` builds, pushes and rolls it out. App Runner ends
 every request at 120 s, so the container stops tool calls at 100 s with a
 readable error. See [deploy/README.md](deploy/README.md) for the steps, the
@@ -138,6 +146,7 @@ Then check it:
 ```bash
 megane-builder-conformance -- python my_tools.py
 megane-builder-conformance --url http://127.0.0.1:8765/mcp --token TOKEN
+megane-builder-conformance --url https://tools.example/mcp --origin https://megane.example  # --public server
 ```
 
 The checker validates the tool markers, the form-generation subset, widget

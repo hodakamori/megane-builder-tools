@@ -2,6 +2,7 @@
 
 megane-builder-conformance -- uvx megane-builder-tools
 megane-builder-conformance --url http://127.0.0.1:8765/mcp --token TOKEN
+megane-builder-conformance --url https://tools.example/mcp --origin https://megane.example  # public mode
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="megane-builder-conformance", description=__doc__.splitlines()[0])
     parser.add_argument("--url", help="Streamable HTTP endpoint of the server")
     parser.add_argument("--token", help="bearer token for --url")
+    parser.add_argument("--origin", help="Origin header for --url (a server in public mode requires an allowed one)")
     parser.add_argument("--no-call", action="store_true", help="only check the tool definitions")
     parser.add_argument("--tool", action="append", default=None, help="check only this tool (repeatable)")
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
@@ -36,10 +38,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def request_headers(args: argparse.Namespace) -> dict[str, str] | None:
+    """HTTP headers for ``--url``: the bearer token and the Origin, when given."""
+    headers = {}
+    if args.token:
+        headers["Authorization"] = f"Bearer {args.token}"
+    if args.origin:
+        headers["Origin"] = args.origin
+    return headers or None
+
+
 def client_for(args: argparse.Namespace) -> Client:
     if args.url:
-        headers = {"Authorization": f"Bearer {args.token}"} if args.token else None
-        return Client(streamable_http_client(args.url, http_client=create_mcp_http_client(headers=headers)))
+        http_client = create_mcp_http_client(headers=request_headers(args))
+        return Client(streamable_http_client(args.url, http_client=http_client))
     return Client(StdioServerParameters(command=args.command[0], args=args.command[1:]))
 
 

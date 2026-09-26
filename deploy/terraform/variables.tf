@@ -1,11 +1,11 @@
 variable "aws_region" {
-  description = "AWS region for App Runner, ECR and the secret"
+  description = "AWS region for App Runner and ECR"
   type        = string
   default     = "ap-northeast-1"
 }
 
 variable "app_name" {
-  description = "Name of the ECR repository, the App Runner service and the secret prefix"
+  description = "Name of the ECR repository and the App Runner service"
   type        = string
   default     = "megane-builder-tools"
 }
@@ -34,7 +34,7 @@ variable "instances" {
 }
 
 variable "allowed_origins" {
-  description = "Web origins allowed to call the server (megane Builder pages)"
+  description = "Web origins allowed to call the server (megane Builder pages); requests from anywhere else are refused"
   type        = list(string)
   default = [
     "https://megane.tech-office-mori.com",

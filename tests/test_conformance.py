@@ -272,6 +272,14 @@ def test_cli_arguments():
         cli.parse_args(["--url", "http://x", "--", "cmd"])
 
 
+def test_cli_request_headers():
+    assert cli.request_headers(cli.parse_args(["--url", "http://x/mcp"])) is None
+    both = cli.parse_args(["--url", "http://x/mcp", "--token", "t", "--origin", "https://page.example"])
+    assert cli.request_headers(both) == {"Authorization": "Bearer t", "Origin": "https://page.example"}
+    origin_only = cli.parse_args(["--url", "http://x/mcp", "--origin", "https://page.example"])
+    assert cli.request_headers(origin_only) == {"Origin": "https://page.example"}
+
+
 @pytest.mark.parametrize("as_json", [False, True])
 def test_cli_main(monkeypatch, capsys, as_json):
     ok = Report(server="s", builder_tools=["a"])
