@@ -1,0 +1,68 @@
+[project]
+name = "megane-builder-tools"
+version = "0.1.0"
+description = "Reference MCP server and SDK for megane Builder tool buttons (liquid boxes, polymer chains, solvation)"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "hodakamori" }]
+keywords = ["megane", "mcp", "molecular-modeling", "packmol", "radonpy"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+requires-python = ">=3.11"
+dependencies = [
+    "anyio>=4.5",
+    "mcp>=2.2,<3",
+    "numpy>=1.26",
+    "packmol>=21.2",
+    "pydantic>=2.11",
+    "radonpy-pypi>=0.2.11",
+    "rdkit>=2025.3",
+    "scipy>=1.11",
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+]
+
+[project.scripts]
+megane-builder-tools = "megane_builder_tools.server:main"
+megane-builder-conformance = "megane_builder_tools.conformance.cli:main"
+
+[project.urls]
+Repository = "https://github.com/hodakamori/megane-builder-tools"
+Contract = "https://megane-labs.github.io/megane/dev/builder-tools"
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ase>=3.29.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.9",
+    "ty>=0.0.84",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "--cov=megane_builder_tools --cov-report=term-missing"
+filterwarnings = ["ignore:The distutils package is deprecated:DeprecationWarning"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ty.src]
+include = ["src"]
