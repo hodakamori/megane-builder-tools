@@ -36,7 +36,8 @@ permission to manage App Runner, ECR and IAM roles.
 
 **From GitHub Actions:** run *Deploy to AWS App Runner* (Actions → workflow
 dispatch). It creates the ECR repository, builds and pushes the image tagged
-with the commit SHA, applies Terraform, checks `/health` and that a request
+with the commit SHA, applies Terraform, starts an App Runner deployment and
+waits for it to succeed, checks `/health` and that a request
 without an allowed `Origin` is refused, runs the conformance checker against
 the live endpoint and makes one real `liquid_box` call. Later pushes to `main` that
 touch the server redeploy automatically.
@@ -52,6 +53,7 @@ REPO=$(terraform output -raw ecr_repository_url)
 aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin "${REPO%%/*}"
 docker build --platform linux/amd64 -t "$REPO:$TAG" ../.. && docker push "$REPO:$TAG"
 terraform apply -var image_tag=$TAG
+aws apprunner start-deployment --service-arn "$(terraform output -raw service_arn)"
 terraform output mcp_endpoint
 ```
 

@@ -81,6 +81,36 @@ jobs:
         working-directory: deploy/terraform
         run: terraform apply -auto-approve -input=false -var "image_tag=${GITHUB_SHA}"
 
+      # Terraform's service update returns before App Runner has replaced the
+      # running instance (and with auto deployments off it may not replace it
+      # at all), so deploy explicitly and wait for the operation to succeed.
+      - name: Deploy and wait for the new instance
+        working-directory: deploy/terraform
+        run: |
+          set -euo pipefail
+          arn="$(terraform output -raw service_arn)"
+          wait_running() {
+            for _ in $(seq 1 90); do
+              status="$(aws apprunner describe-service --service-arn "$arn" --query Service.Status --output text)"
+              case "$status" in
+                RUNNING) return 0 ;;
+                OPERATION_IN_PROGRESS) sleep 10 ;;
+                *) echo "App Runner service status: $status"; return 1 ;;
+              esac
+            done
+            echo "App Runner operation did not finish within 15 minutes"; return 1
+          }
+          wait_running
+          op="$(aws apprunner start-deployment --service-arn "$arn" --query OperationId --output text)"
+          wait_running
+          result="$(aws apprunner list-operations --service-arn "$arn" \
+            --query "OperationSummaryList[?Id=='$op'].Status | [0]" --output text)"
+          echo "Deployment $op: $result"
+          test "$result" = SUCCEEDED || {
+            echo "::error::App Runner deployment $op ended $result; see the service's deployment logs in the App Runner console"
+            exit 1
+          }
+
       - name: Smoke test
         working-directory: deploy/terraform
         run: |
