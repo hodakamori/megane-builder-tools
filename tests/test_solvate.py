@@ -38,7 +38,7 @@ def test_free_volume_excludes_atoms(box_document):
 
 def test_cell_requirements(box_document):
     no_cell = Structure.from_arrays([1], [[0, 0, 0]])
-    with pytest.raises(ToolError, match="needs a periodic cell"):
+    with pytest.raises(ToolError, match="needs a periodic cell; set one with Structure › Set cell"):
         sv.orthorhombic_box(no_cell)
     tilted = Structure.from_arrays([1], [[0, 0, 0]], cell=[[10, 0, 0], [2, 10, 0], [0, 0, 10]])
     with pytest.raises(ToolError, match="orthorhombic cells only"):

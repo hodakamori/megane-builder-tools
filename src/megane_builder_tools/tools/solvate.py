@@ -39,7 +39,7 @@ def orthorhombic_box(document: Structure) -> NDArray[np.float64]:
     """Edge lengths of the document's cell; refuses a missing or non-orthorhombic cell."""
     cell = document.cell_matrix()
     if cell is None:
-        raise ToolError("Solvate needs a periodic cell; set one in Crystal → Cell.")
+        raise ToolError("Solvate needs a periodic cell; set one with Structure › Set cell…")
     off_diagonal = cell - np.diag(np.diag(cell))
     if np.abs(off_diagonal).max() > 1e-6 or np.any(np.diag(cell) <= 0):
         raise ToolError("Solvate currently supports orthorhombic cells only.")
