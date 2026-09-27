@@ -1,3 +1,8 @@
+output "service_arn" {
+  description = "App Runner service ARN (the deploy workflow starts and waits for deployments with it)"
+  value       = aws_apprunner_service.tools.arn
+}
+
 output "service_url" {
   description = "App Runner default domain"
   value       = aws_apprunner_service.tools.service_url
