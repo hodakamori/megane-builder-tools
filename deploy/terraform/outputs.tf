@@ -17,3 +17,28 @@ output "ecr_repository_url" {
   description = "Push images here"
   value       = aws_ecr_repository.tools.repository_url
 }
+
+output "service_configuration" {
+  description = "App Runner source and instance configuration the deploy workflow pushes with update-service"
+  value = {
+    SourceConfiguration = {
+      AutoDeploymentsEnabled      = false
+      AuthenticationConfiguration = { AccessRoleArn = aws_iam_role.access.arn }
+      ImageRepository = {
+        ImageIdentifier     = "${aws_ecr_repository.tools.repository_url}:${var.image_tag}"
+        ImageRepositoryType = "ECR"
+        ImageConfiguration = {
+          Port                        = "8080"
+          RuntimeEnvironmentVariables = local.runtime_environment_variables
+          # Explicitly empty: clears the bearer-token secret of the first deployment.
+          RuntimeEnvironmentSecrets = {}
+        }
+      }
+    }
+    InstanceConfiguration = {
+      Cpu             = var.cpu
+      Memory          = var.memory
+      InstanceRoleArn = aws_iam_role.instance.arn
+    }
+  }
+}

@@ -39,6 +39,19 @@ locals {
     App       = var.app_name
     ManagedBy = "terraform"
   }
+
+  runtime_environment_variables = {
+    # Public mode: no token (the demo page is public, so a token in it would
+    # be too); every request must carry one of these Origins.
+    MEGANE_BUILDER_TOOLS_PUBLIC          = "1"
+    MEGANE_BUILDER_TOOLS_ALLOWED_ORIGINS = join(",", var.allowed_origins)
+    # App Runner's public name is only known after creation; the Origin gate
+    # and CORS apply regardless, so the Host check is off.
+    MEGANE_BUILDER_TOOLS_ALLOWED_HOSTS   = "*"
+    MEGANE_BUILDER_TOOLS_STATELESS       = "1"
+    MEGANE_BUILDER_TOOLS_CALL_TIMEOUT    = tostring(var.call_timeout)
+    MEGANE_BUILDER_TOOLS_MAX_CONCURRENCY = tostring(var.max_concurrency)
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -96,6 +109,26 @@ resource "aws_iam_role_policy_attachment" "access_ecr" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess"
 }
 
+# The role the running container assumes. It has no permissions; it exists
+# because App Runner cannot drop an instance role once a service has one (the
+# provider omits an empty instance_role_arn, which App Runner reads as
+# "unchanged"), so a service created with it keeps needing a role by this name.
+data "aws_iam_policy_document" "tasks_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["tasks.apprunner.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "instance" {
+  name               = "${var.app_name}-apprunner-instance"
+  assume_role_policy = data.aws_iam_policy_document.tasks_assume.json
+  tags               = local.common_tags
+}
+
 # ---------------------------------------------------------------------------
 # App Runner: one always-on instance
 # ---------------------------------------------------------------------------
@@ -123,26 +156,16 @@ resource "aws_apprunner_service" "tools" {
       image_repository_type = "ECR"
 
       image_configuration {
-        port = "8080"
-        runtime_environment_variables = {
-          # Public mode: no token (the demo page is public, so a token in it
-          # would be too); every request must carry one of these Origins.
-          MEGANE_BUILDER_TOOLS_PUBLIC          = "1"
-          MEGANE_BUILDER_TOOLS_ALLOWED_ORIGINS = join(",", var.allowed_origins)
-          # App Runner's public name is only known after creation; the Origin
-          # gate and CORS apply regardless, so the Host check is off.
-          MEGANE_BUILDER_TOOLS_ALLOWED_HOSTS   = "*"
-          MEGANE_BUILDER_TOOLS_STATELESS       = "1"
-          MEGANE_BUILDER_TOOLS_CALL_TIMEOUT    = tostring(var.call_timeout)
-          MEGANE_BUILDER_TOOLS_MAX_CONCURRENCY = tostring(var.max_concurrency)
-        }
+        port                          = "8080"
+        runtime_environment_variables = local.runtime_environment_variables
       }
     }
   }
 
   instance_configuration {
-    cpu    = var.cpu
-    memory = var.memory
+    cpu               = var.cpu
+    memory            = var.memory
+    instance_role_arn = aws_iam_role.instance.arn
   }
 
   health_check_configuration {
@@ -155,6 +178,15 @@ resource "aws_apprunner_service" "tools" {
   }
 
   tags = local.common_tags
+
+  # Terraform creates the service; the deploy workflow rolls out every image
+  # and configuration change with `aws apprunner update-service`. The provider
+  # cannot remove runtime secrets or an instance role (it omits empty values,
+  # which App Runner reads as "unchanged"), so an update through it can leave a
+  # service pointing at deleted resources, which then fails to deploy.
+  lifecycle {
+    ignore_changes = [source_configuration, instance_configuration]
+  }
 
   depends_on = [aws_iam_role_policy_attachment.access_ecr]
 }
