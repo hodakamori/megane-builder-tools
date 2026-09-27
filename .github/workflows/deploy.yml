@@ -81,14 +81,17 @@ jobs:
         working-directory: deploy/terraform
         run: terraform apply -auto-approve -input=false -var "image_tag=${GITHUB_SHA}"
 
-      # Terraform's service update returns before App Runner has replaced the
-      # running instance (and with auto deployments off it may not replace it
-      # at all), so deploy explicitly and wait for the operation to succeed.
+      # Terraform only creates the service (it ignores later source/instance
+      # changes, see main.tf). Push the full configuration here: the provider
+      # omits empty runtime secrets and instance roles, which App Runner reads
+      # as "unchanged", so only an explicit update can clear them. Then wait
+      # for the deployment and fail with its status (and the logs) otherwise.
       - name: Deploy and wait for the new instance
         working-directory: deploy/terraform
         run: |
           set -euo pipefail
           arn="$(terraform output -raw service_arn)"
+          config="$(terraform output -json service_configuration)"
           wait_running() {
             for _ in $(seq 1 90); do
               status="$(aws apprunner describe-service --service-arn "$arn" --query Service.Status --output text)"
@@ -100,16 +103,36 @@ jobs:
             done
             echo "App Runner operation did not finish within 15 minutes"; return 1
           }
+          diagnose() {
+            echo "::group::Service configuration after the failed deployment"
+            aws apprunner describe-service --service-arn "$arn" --query '{
+              image: Service.SourceConfiguration.ImageRepository.ImageIdentifier,
+              env: keys(Service.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentVariables || `{}`),
+              secrets: keys(Service.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentSecrets || `{}`),
+              instanceRole: Service.InstanceConfiguration.InstanceRoleArn}' || true
+            echo "::endgroup::"
+            id="${arn##*/}"
+            for stream in service application; do
+              echo "::group::App Runner $stream log (last 40 events)"
+              aws logs filter-log-events --log-group-name "/aws/apprunner/${APP_NAME}/${id}/${stream}" \
+                --start-time "$(( ($(date +%s) - 1800) * 1000 ))" --query 'events[-40:].message' --output text || true
+              echo "::endgroup::"
+            done
+          }
           wait_running
-          op="$(aws apprunner start-deployment --service-arn "$arn" --query OperationId --output text)"
-          wait_running
+          op="$(aws apprunner update-service --service-arn "$arn" \
+            --source-configuration "$(jq -c .SourceConfiguration <<<"$config")" \
+            --instance-configuration "$(jq -c .InstanceConfiguration <<<"$config")" \
+            --query OperationId --output text)"
+          wait_running || { diagnose; exit 1; }
           result="$(aws apprunner list-operations --service-arn "$arn" \
             --query "OperationSummaryList[?Id=='$op'].Status | [0]" --output text)"
           echo "Deployment $op: $result"
-          test "$result" = SUCCEEDED || {
-            echo "::error::App Runner deployment $op ended $result; see the service's deployment logs in the App Runner console"
+          if [ "$result" != SUCCEEDED ]; then
+            diagnose
+            echo "::error::App Runner deployment $op ended $result"
             exit 1
-          }
+          fi
 
       - name: Smoke test
         working-directory: deploy/terraform
